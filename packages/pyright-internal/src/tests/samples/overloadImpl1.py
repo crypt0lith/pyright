@@ -237,7 +237,7 @@ class ClassG(Generic[T]): ...
 
 
 @overload
-def func14(target: Callable[..., Awaitable[T]]) -> ClassG[T]: ...
+def func14(target: Callable[..., Awaitable[T]]) -> ClassG[T]: ...  # pyright: ignore[reportOverlappingOverload]
 
 
 @overload

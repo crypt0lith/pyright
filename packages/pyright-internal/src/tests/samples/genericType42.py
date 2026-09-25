@@ -30,7 +30,7 @@ def make_a(x: Callable[P, R]) -> Type[A[R, P]]: ...
 
 
 @overload
-def func2(x: Type[A[R, P]]) -> Type[A[R, P]]: ...
+def func2(x: Type[A[R, P]]) -> Type[A[R, P]]: ...  # pyright: ignore[reportOverlappingOverload]
 
 
 @overload

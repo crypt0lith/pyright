@@ -2691,9 +2691,33 @@ export class Checker extends ParseTreeWalker {
 
         for (let i = 0; i < prevOverloads.length; i++) {
             const prevOverload = prevOverloads[i];
-            if (this._isOverlappingOverload(prevOverload, functionType, /* partialOverlap */ true)) {
-                const prevReturnType = FunctionType.getEffectiveReturnType(prevOverload);
-                const returnType = FunctionType.getEffectiveReturnType(functionType);
+            const constraints = new ConstraintTracker();
+            if (this._isOverlappingOverload(prevOverload, functionType, /* partialOverlap */ true, constraints)) {
+                let prevReturnType = FunctionType.getEffectiveReturnType(prevOverload);
+                let returnType = FunctionType.getEffectiveReturnType(functionType);
+
+                // Bind type variables the same way _isOverlappingOverload does for
+                // the parameter check: the earlier overload's type variables
+                // (including its own) are fixed, and only the later overload's
+                // function-local type variables remain solvable.
+                const prevOverloadNode = prevOverload.shared.declaration?.node;
+                if (prevReturnType && prevOverloadNode) {
+                    const liveTypeVars = ParseTreeUtils.getTypeVarScopesForNode(prevOverloadNode, this._nodeInfo);
+                    prevReturnType = makeTypeVarsBound(prevReturnType, liveTypeVars);
+                }
+
+                const functionNodeParent = functionType.shared.declaration?.node?.parent;
+                if (returnType && functionNodeParent) {
+                    const liveTypeVars = ParseTreeUtils.getTypeVarScopesForNode(functionNodeParent, this._nodeInfo);
+                    returnType = makeTypeVarsBound(returnType, liveTypeVars);
+                }
+
+                // Apply the solutions from the parameter overlap check so the later
+                // overload's return type reflects the arguments that select both
+                // overloads. Type variables that were not solved remain free.
+                if (returnType) {
+                    returnType = this._evaluator.solveAndApplyConstraints(returnType, constraints);
+                }
 
                 if (
                     prevReturnType &&
@@ -2743,7 +2767,12 @@ export class Checker extends ParseTreeWalker {
         return undefined;
     }
 
-    private _isOverlappingOverload(functionType: FunctionType, prevOverload: FunctionType, partialOverlap: boolean) {
+    private _isOverlappingOverload(
+        functionType: FunctionType,
+        prevOverload: FunctionType,
+        partialOverlap: boolean,
+        constraints?: ConstraintTracker
+    ) {
         // According to precedent, the __get__ method is special-cased and is
         // exempt from overlapping overload checks. It's not clear why this is
         // the case, but for consistency with other type checkers, we'll honor
@@ -2779,7 +2808,7 @@ export class Checker extends ParseTreeWalker {
             functionType,
             prevOverload,
             /* diag */ undefined,
-            /* constraints */ undefined,
+            constraints,
             flags
         );
     }

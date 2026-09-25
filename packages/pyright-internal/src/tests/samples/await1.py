@@ -43,7 +43,7 @@ async def func5(__fn: Callable[..., T]) -> T: ...
 
 
 @overload
-def sum(__iterable: Iterable[Literal[0]]) -> int: ...
+def sum(__iterable: Iterable[Literal[0]]) -> int: ...  # pyright: ignore[reportOverlappingOverload]
 
 
 @overload

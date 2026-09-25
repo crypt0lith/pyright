@@ -126,7 +126,7 @@ def test_4(pair: Pair[Pair[Pair[A, B], C], D]) -> Pair[Pair[Pair[A, B], C], D]:
 
 
 @overload
-def test_5(a: Callable[P, type[T]], *, b: Literal[0] = ...) -> type[list[type[T]]]: ...
+def test_5(a: Callable[P, type[T]], *, b: Literal[0] = ...) -> type[list[type[T]]]: ...  # pyright: ignore[reportOverlappingOverload]
 
 
 @overload
