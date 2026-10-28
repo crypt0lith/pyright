@@ -275,6 +275,7 @@ import {
     isUnknown,
     isUnpacked,
     isUnpackedClass,
+    isUnpackedTypeVar,
     isUnpackedTypeVarTuple,
     LiteralValue,
     maxTypeRecursionCount,
@@ -12347,8 +12348,9 @@ export function createTypeEvaluator(
         return convertToInstance(castToType);
     }
 
-    // Expands any unpacked tuples within an argument list.
-    function expandArgList(argList: Arg[]): Arg[] {
+    // Expands any unpacked tuples within an argument list. The args that an
+    // unpacked TypeVar expands to are recorded in unpackedTypeVarArgs.
+    function expandArgList(argList: Arg[], unpackedTypeVarArgs: Map<Arg, TupleTypeArg>): Arg[] {
         const expandedArgList: Arg[] = [];
 
         for (const arg of argList) {
@@ -12364,31 +12366,56 @@ export function createTypeEvaluator(
                 );
 
                 if (isClassInstance(combinedArgType) && isTupleClass(combinedArgType)) {
-                    const tupleTypeArgs = expandUnpackedTypeVarsInTupleArgs(combinedArgType.priv.tupleTypeArgs ?? []);
+                    const unexpandedTypeArgs = combinedArgType.priv.tupleTypeArgs ?? [];
+                    const tupleTypeArgs = expandUnpackedTypeVarsInTupleArgs(unexpandedTypeArgs);
+
+                    // A TypeVar with a tuple bound expands like an unpacked TypeVar.
+                    const unpackedArgType =
+                        isTypeVar(argType) && !isTypeVarTuple(argType) ? applyUnpackToTupleLike(argType) : undefined;
+                    const unpackedArgTypeVar: TupleTypeArg | undefined = unpackedArgType
+                        ? { type: unpackedArgType, isUnbounded: false }
+                        : undefined;
 
                     if (tupleTypeArgs.length !== 1 || !tupleTypeArgs[0].isUnbounded) {
-                        for (const tupleTypeArg of tupleTypeArgs) {
-                            if (tupleTypeArg.isUnbounded) {
-                                expandedArgList.push({
-                                    ...arg,
-                                    argCategory: ArgCategory.UnpackedList,
-                                    valueExpression: undefined,
-                                    typeResult: {
-                                        type: makeTupleObject(evaluatorInterface, [tupleTypeArg]),
-                                    },
-                                });
-                            } else {
-                                expandedArgList.push({
-                                    ...arg,
-                                    argCategory: ArgCategory.Simple,
-                                    valueExpression: undefined,
-                                    typeResult: {
-                                        type: tupleTypeArg.type,
-                                    },
-                                });
+                        for (const unexpandedTypeArg of unexpandedTypeArgs) {
+                            const expandedTypeArgs = expandUnpackedTypeVarsInTupleArgs([unexpandedTypeArg]);
+                            const unpackedTypeVarArg =
+                                unpackedArgTypeVar ??
+                                (expandedTypeArgs[0] !== unexpandedTypeArg ? { ...unexpandedTypeArg } : undefined);
+
+                            for (const tupleTypeArg of expandedTypeArgs) {
+                                const expandedArg: Arg = tupleTypeArg.isUnbounded
+                                    ? {
+                                          ...arg,
+                                          argCategory: ArgCategory.UnpackedList,
+                                          valueExpression: undefined,
+                                          typeResult: {
+                                              type: makeTupleObject(evaluatorInterface, [tupleTypeArg]),
+                                          },
+                                      }
+                                    : {
+                                          ...arg,
+                                          argCategory: ArgCategory.Simple,
+                                          valueExpression: undefined,
+                                          typeResult: {
+                                              type: tupleTypeArg.type,
+                                          },
+                                      };
+
+                                expandedArgList.push(expandedArg);
+
+                                if (unpackedTypeVarArg) {
+                                    unpackedTypeVarArgs.set(expandedArg, unpackedTypeVarArg);
+                                }
                             }
                         }
                         continue;
+                    }
+
+                    if (unpackedArgTypeVar) {
+                        unpackedTypeVarArgs.set(arg, unpackedArgTypeVar);
+                    } else if (tupleTypeArgs[0] !== unexpandedTypeArgs[0]) {
+                        unpackedTypeVarArgs.set(arg, { ...unexpandedTypeArgs[0] });
                     }
                 }
             }
@@ -12421,7 +12448,8 @@ export function createTypeEvaluator(
         let isTypeVarTupleFullyMatched = false;
 
         // Expand any unpacked tuples in the arg list.
-        argList = expandArgList(argList);
+        const unpackedTypeVarArgs = new Map<Arg, TupleTypeArg>();
+        argList = expandArgList(argList, unpackedTypeVarArgs);
 
         // Construct an object that racks which parameters have been assigned arguments.
         const paramTracker = new ParamAssignmentTracker(paramDetails.params);
@@ -12730,6 +12758,11 @@ export function createTypeEvaluator(
                     }
 
                     if (funcArg) {
+                        const unpackedTypeVarArg = unpackedTypeVarArgs.get(argList[argIndex]);
+                        if (unpackedTypeVarArg) {
+                            unpackedTypeVarArgs.set(funcArg, unpackedTypeVarArg);
+                        }
+
                         validateArgTypeParams.push({
                             paramCategory: paramInfo.param.category,
                             paramType,
@@ -13358,7 +13391,26 @@ export function createTypeEvaluator(
                 const variadicArgs = validateArgTypeParams.filter((argParam) => argParam.mapsToVarArgList);
 
                 if (isUnpacked(paramType) && (!isTypeVarTuple(paramType) || !paramType.priv.isInUnion)) {
-                    const tupleTypeArgs: TupleTypeArg[] = variadicArgs.map((argParam) => {
+                    const tupleTypeArgs: TupleTypeArg[] = [];
+                    variadicArgs.forEach((argParam) => {
+                        // An unpacked TypeVar arg that maps entirely to an
+                        // unpacked TypeVar parameter stays a single entry.
+                        const unpackedTypeVarArg = unpackedTypeVarArgs.get(argParam.argument);
+                        if (
+                            unpackedTypeVarArg &&
+                            isUnpackedTypeVar(paramType) &&
+                            !validateArgTypeParams.some(
+                                (other) =>
+                                    !other.mapsToVarArgList &&
+                                    unpackedTypeVarArgs.get(other.argument) === unpackedTypeVarArg
+                            )
+                        ) {
+                            if (!tupleTypeArgs.includes(unpackedTypeVarArg)) {
+                                tupleTypeArgs.push(unpackedTypeVarArg);
+                            }
+                            return;
+                        }
+
                         const argType = getTypeOfArg(argParam.argument, /* inferenceContext */ undefined).type;
 
                         const containsTypeVarTuple =
@@ -13384,17 +13436,23 @@ export function createTypeEvaluator(
                             reportedArgError = true;
                         }
 
-                        return {
+                        tupleTypeArgs.push({
                             type: argType,
                             isUnbounded: argParam.argument.argCategory === ArgCategory.UnpackedList,
-                        };
+                        });
                     });
 
                     let specializedTuple: Type | undefined;
                     if (tupleTypeArgs.length === 1 && !tupleTypeArgs[0].isUnbounded) {
                         const entryType = tupleTypeArgs[0].type;
 
-                        if (isUnpacked(entryType)) {
+                        // A bound TypeVar parameter isn't solved, so the arguments are
+                        // matched as that TypeVar rather than as a tuple of its entries.
+                        if (
+                            isUnpacked(entryType) &&
+                            (!isUnpackedTypeVar(entryType) ||
+                                (isUnpackedTypeVar(paramType) && TypeVarType.isBound(paramType)))
+                        ) {
                             specializedTuple = makePacked(entryType);
                         }
                     }
@@ -17198,6 +17256,9 @@ export function createTypeEvaluator(
                             ) {
                                 noteSawUnpacked(entry);
                             }
+                        } else if (isUnpackedTypeVar(entryType)) {
+                            paramCategory = ParamCategory.ArgsList;
+                            noteSawUnpacked(entry);
                         }
                     } else {
                         entryType = UnknownType.create();
@@ -21277,7 +21338,9 @@ export function createTypeEvaluator(
                     return ClassType.cloneForPacked(type);
                 }
 
-                return makeTupleObject(evaluatorInterface, [{ type, isUnbounded: !isTypeVarTuple(type) }]);
+                return makeTupleObject(evaluatorInterface, [
+                    { type, isUnbounded: !(isTypeVarTuple(type) || isUnpackedTypeVar(type)) },
+                ]);
             }
 
             case ParamCategory.KwargsDict: {
@@ -28622,7 +28685,7 @@ export function createTypeEvaluator(
         const srcTupleTypes: TupleTypeArg[] = [];
         srcPositionalsToPack.forEach((entry) => {
             if (entry.param.category === ParamCategory.ArgsList) {
-                if (isUnpackedTypeVarTuple(entry.type)) {
+                if (isUnpackedTypeVarTuple(entry.type) || isUnpackedTypeVar(entry.type)) {
                     srcTupleTypes.push({ type: entry.type, isUnbounded: false });
                 } else if (isUnpackedClass(entry.type) && entry.type.priv.tupleTypeArgs) {
                     appendArray(srcTupleTypes, entry.type.priv.tupleTypeArgs);
@@ -28634,7 +28697,10 @@ export function createTypeEvaluator(
             }
         });
 
-        if (srcTupleTypes.length !== 1 || !isTypeVarTuple(srcTupleTypes[0].type)) {
+        if (
+            srcTupleTypes.length !== 1 ||
+            (!isTypeVarTuple(srcTupleTypes[0].type) && !isUnpackedTypeVar(srcTupleTypes[0].type))
+        ) {
             const srcPositionalsType = makeTupleObject(evaluatorInterface, srcTupleTypes, /* isUnpacked */ true);
 
             // Snip out the portion of the source positionals that map to the variadic
@@ -28835,7 +28901,8 @@ export function createTypeEvaluator(
 
             // Skip over the *args parameter since it's handled separately below.
             if (paramIndex === destParamDetails.argsIndex) {
-                if (!isUnpackedTypeVarTuple(destParamDetails.params[destParamDetails.argsIndex].type)) {
+                const destArgsType = destParamDetails.params[destParamDetails.argsIndex].type;
+                if (!isUnpackedTypeVarTuple(destArgsType) && !isUnpackedTypeVar(destArgsType)) {
                     skippedPosParamIndices.push(paramIndex);
                 }
                 continue;
