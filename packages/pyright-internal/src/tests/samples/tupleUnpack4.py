@@ -268,6 +268,8 @@ class ClassA(Generic[U]):
 class ClassB:
     def method1(self, *args: *tuple[bytes, *U, bool]) -> None: ...
 
+    def method2(self, *args: *tuple[*U]) -> None: ...
+
 
 class ClassC(ClassB):
     def method1(self, *args: *tuple[bytes, *U, bool]) -> None: ...
@@ -276,6 +278,15 @@ class ClassC(ClassB):
 class ClassD(ClassB):
     # This should generate an error.
     def method1(self, a: bytes, b: str, c: str, d: bool, /) -> None: ...
+
+    # This should generate an error.
+    def method2(self, a: str, b: str, /) -> None: ...
+
+
+class ClassE(ClassB):
+    def method1(self, a: bytes, b: int, c: str, d: bool, /) -> None: ...
+
+    def method2(self, a: int, b: str, /) -> None: ...
 
 
 def func28(*args: Unpack[U]):
