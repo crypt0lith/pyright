@@ -1922,8 +1922,14 @@ export function createTypeEvaluator(
 
         const iterTypeResult = getTypeOfExpression(node.d.expr, flags, makeInferenceContext(iterExpectedType));
         const iterType = iterTypeResult.type;
+        const unpackedTypeVar =
+            (flags & EvalFlags.AllowUnpackedTuple) !== 0 && isTypeVar(iterType) && !isTypeVarTuple(iterType)
+                ? applyUnpackToTupleLike(iterType)
+                : undefined;
         if ((flags & EvalFlags.NoTypeVarTuple) === 0 && isTypeVarTuple(iterType) && !iterType.priv.isUnpacked) {
             typeResult = { type: TypeVarType.cloneForUnpacked(iterType) };
+        } else if (unpackedTypeVar) {
+            typeResult = { type: unpackedTypeVar };
         } else if (
             (flags & EvalFlags.AllowUnpackedTuple) !== 0 &&
             isInstantiableClass(iterType) &&
@@ -18139,7 +18145,7 @@ export function createTypeEvaluator(
                                     LocMessage.typeVarTupleContext(),
                                     typeArgs[0].node
                                 );
-                            } else if (isUnpackedClass(typeArgs[0].type)) {
+                            } else if (isUnpackedClass(typeArgs[0].type) || isUnpackedTypeVar(typeArgs[0].type)) {
                                 addDiagnostic(
                                     DiagnosticRule.reportInvalidTypeForm,
                                     LocMessage.ellipsisAfterUnpacked(),

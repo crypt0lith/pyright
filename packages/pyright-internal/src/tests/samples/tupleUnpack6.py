@@ -180,3 +180,18 @@ def test20(t: tuple[int, int, int]):
 def test21(t: tuple[int, int, int]):
     # This should generate an error.
     v: tuple[object, str] = func14(t, t)
+
+
+def func15[S: tuple[int, ...]](*args: *S) -> S: ...
+
+
+def test22():
+    reveal_type(func15, expected_text="(*args: *S@func15) -> S@func15")
+
+
+def test23[S: tuple[int, ...]](c: Callable[[*S], S]):
+    reveal_type(c, expected_text="(*S@test23) -> S@test23")
+
+
+# This should generate an error.
+def func16[S: tuple[int, ...]](t: tuple[*S, ...]) -> None: ...
